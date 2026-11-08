@@ -34,6 +34,10 @@ else()
 endif()
 
 enable_testing()
-add_executable(core_tests tests/core_tests.cpp)
-target_link_libraries(core_tests PRIVATE fin-tracker-core)
-add_test(NAME core_tests COMMAND core_tests)
+# One executable per test file, so ctest reports each separately and one crash can't hide the rest.
+# Add a new test file by adding its name (without _test.cpp) here.
+foreach(name amounts parser money_text periods db)
+    add_executable(${name}_test tests/${name}_test.cpp)
+    target_link_libraries(${name}_test PRIVATE fin-tracker-core)
+    add_test(NAME ${name} COMMAND ${name}_test)
+endforeach()

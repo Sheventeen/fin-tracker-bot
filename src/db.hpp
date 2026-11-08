@@ -77,10 +77,21 @@ public:
         std::string note;
         std::int64_t created_at;
     };
-    // Deletes and returns the user's most recent entry logged by a message
-    // older than `before_message_id` (Discord snowflakes increase with send
-    // time), if any. Entries without a message_id always qualify.
-    std::optional<RemovedTransaction> undo_last(std::uint64_t user_id, std::uint64_t before_message_id);
+    enum class UndoStatus {
+        Removed,        // `removed` holds the deleted entry
+        NothingToUndo,  // no entry older than the &undo message
+        AlreadyDone,    // this &undo message was handled before (a replayed event)
+    };
+    struct UndoResult {
+        UndoStatus status;
+        RemovedTransaction removed{};  // only meaningful when status == Removed
+    };
+    // Handles the &undo sent as message `undo_message_id`: deletes and returns
+    // the user's most recent entry logged by an older message (Discord
+    // snowflakes increase with send time). Entries without a message_id always
+    // qualify. Each undo message is acted on at most once, so a replayed
+    // gateway event can't delete a second entry.
+    UndoResult undo_last(std::uint64_t user_id, std::uint64_t undo_message_id);
 
     // nullopt when the user hasn't chosen one (or doesn't exist yet).
     std::optional<std::string> get_timezone(std::uint64_t user_id);
@@ -113,6 +124,7 @@ private:
     std::unique_ptr<sqlite3, ConnectionCloser> conn_;
     Statement upsert_user_;
     Statement insert_tx_;
+    Statement mark_undo_;
     Statement undo_last_;
     Statement get_tz_;
     Statement set_tz_;

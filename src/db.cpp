@@ -11,7 +11,7 @@ namespace fin {
 
 namespace {
 
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
 
 // Discord snowflakes are uint64 but stay below 2^63 until ~2084, so they fit
 // SQLite's signed 64-bit INTEGER exactly.
@@ -41,6 +41,14 @@ public:
 private:
     Statement& stmt_;
 };
+
+// v2: remembers which &undo messages were already handled, so a replayed
+// event can't undo twice. Keyed by message ID alone: snowflakes are globally unique.
+constexpr const char* kSchemaV2 = R"sql(
+CREATE TABLE processed_undos (
+    message_id INTEGER PRIMARY KEY
+);
+)sql";
 
 constexpr const char* kSchemaV1 = R"sql(
 CREATE TABLE users (
@@ -186,6 +194,9 @@ Db::Db(const std::string& path) {
         "ON CONFLICT (message_id) DO NOTHING");
     // message_id breaks ties within the same second: it follows send order,
     // while `id` follows insert order, which the thread pool can shuffle.
+    mark_undo_ = Statement(db,
+        "INSERT INTO processed_undos (message_id) VALUES (?1) "
+        "ON CONFLICT (message_id) DO NOTHING");
     undo_last_ = Statement(db,
         "DELETE FROM transactions WHERE id = ("
         "  SELECT id FROM transactions WHERE user_id = ?1 AND (message_id IS NULL OR message_id < ?2) "
@@ -229,7 +240,18 @@ void Db::migrate() {
             throw;
         }
     }
-    // Future migrations: `if (version < 2) { ... PRAGMA user_version = 2 ... }`
+    if (version < 2) {
+        exec("BEGIN IMMEDIATE");
+        try {
+            exec(kSchemaV2);
+            exec("PRAGMA user_version = 2");
+            exec("COMMIT");
+        } catch (...) {
+            sqlite3_exec(conn_.get(), "ROLLBACK", nullptr, nullptr, nullptr);
+            throw;
+        }
+    }
+    // Future migrations: `if (version < 3) { ... PRAGMA user_version = 3 ... }`
 }
 
 void Db::sync_categories() {
@@ -283,20 +305,41 @@ Db::InsertResult Db::add_transaction(const NewTransaction& tx) {
     }
 }
 
-std::optional<Db::RemovedTransaction> Db::undo_last(std::uint64_t user_id, std::uint64_t before_message_id) {
+Db::UndoResult Db::undo_last(std::uint64_t user_id, std::uint64_t undo_message_id) {
     std::lock_guard lock(mu_);
-    ResetGuard guard(undo_last_);
-    undo_last_.bind(1, to_db_id(user_id));
-    undo_last_.bind(2, to_db_id(before_message_id));
-    if (!undo_last_.step()) {
-        return std::nullopt;
+    // One transaction: recording the undo message and deleting the entry
+    // happen together or not at all.
+    exec("BEGIN IMMEDIATE");
+    try {
+        {
+            ResetGuard guard(mark_undo_);
+            mark_undo_.bind(1, to_db_id(undo_message_id));
+            mark_undo_.step();
+            if (sqlite3_changes(conn_.get()) == 0) {
+                exec("COMMIT");
+                return {UndoStatus::AlreadyDone};
+            }
+        }
+        UndoResult result{UndoStatus::NothingToUndo};
+        {
+            ResetGuard guard(undo_last_);
+            undo_last_.bind(1, to_db_id(user_id));
+            undo_last_.bind(2, to_db_id(undo_message_id));
+            if (undo_last_.step()) {
+                result = {UndoStatus::Removed,
+                          RemovedTransaction{undo_last_.column_int64(0), undo_last_.column_text(1),
+                                             undo_last_.column_text(2), undo_last_.column_int64(3)}};
+                // Finish the statement so the DELETE completes before COMMIT.
+                while (undo_last_.step()) {
+                }
+            }
+        }
+        exec("COMMIT");
+        return result;
+    } catch (...) {
+        sqlite3_exec(conn_.get(), "ROLLBACK", nullptr, nullptr, nullptr);
+        throw;
     }
-    RemovedTransaction removed{undo_last_.column_int64(0), undo_last_.column_text(1),
-                               undo_last_.column_text(2), undo_last_.column_int64(3)};
-    // Run to completion so the DELETE's implicit transaction commits now.
-    while (undo_last_.step()) {
-    }
-    return removed;
 }
 
 std::optional<std::string> Db::get_timezone(std::uint64_t user_id) {

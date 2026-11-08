@@ -82,6 +82,10 @@ Command parse_log(std::string_view amount_token, std::string_view rest) {
             " add money, every other type subtracts). " + kExample};
     }
 
+    if (amount_token.find(',') != std::string_view::npos) {
+        return ParseError{"Leave out the commas: write `1000`, not `1,000`. " + kExample};
+    }
+
     const AmountResult amount = parse_amount_cents(amount_token);
     switch (amount.error) {
         case AmountError::None:

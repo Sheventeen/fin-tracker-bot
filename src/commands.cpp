@@ -255,11 +255,15 @@ void CommandHandler::handle(const dpp::message& msg, const UndoCmd&) {
 void CommandHandler::undo_now(const dpp::message& msg) {
     // Only entries sent before this `&undo`: one sent after it, but handled
     // first, is never removed.
-    const std::optional<Db::RemovedTransaction> removed = db_.undo_last(msg.author.id, msg.id);
-    if (!removed) {
-        reply_private(msg, "Nothing to undo: you have no entries.");
+    const Db::UndoResult result = db_.undo_last(msg.author.id, msg.id);
+    if (result.status == Db::UndoStatus::AlreadyDone) {
+        return;  // a replayed event: the first delivery already removed an entry and replied
+    }
+    if (result.status == Db::UndoStatus::NothingToUndo) {
+        reply_private(msg, "Nothing to undo: you have no entries logged before this `&undo`.");
         return;
     }
+    const Db::RemovedTransaction* removed = &result.removed;
     std::string text = "Removed " + format_signed_cents(removed->amount_cents) + " " +
                        category_name(removed->category);
     if (!removed->note.empty()) {

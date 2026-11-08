@@ -20,7 +20,7 @@ keyed by user ID, so it follows them across every server and DM.
 
 ```bash
 cmake -B build && cmake --build build        # build
-ctest --test-dir build --output-on-failure   # run tests (tests/core_tests.cpp)
+ctest --test-dir build --output-on-failure   # run tests (tests/*_test.cpp, one executable each)
 set -a; source .env; set +a                  # load DISCORD_TOKEN, DEFAULT_TZ, DB_PATH
 ./build/fin-tracker-bot                      # run
 ```
@@ -38,7 +38,7 @@ set -a; source .env; set +a                  # load DISCORD_TOKEN, DEFAULT_TZ, D
 
 ## Data model
 
-Money is stored as signed integer cents; the category decides the sign. Timestamps are unix seconds UTC, taken from the Discord message's own send time. `idx_tx_user_time (user_id, created_at, category, amount_cents)` is a covering index for the totals query, and a test asserts the query plan uses it. `message_id` is UNIQUE, so a replayed gateway event can't log the same entry twice. Use `ON CONFLICT(...) DO NOTHING`, never `INSERT OR IGNORE`, which also hides other constraint failures.
+Money is stored as signed integer cents; the category decides the sign. Timestamps are unix seconds UTC, taken from the Discord message's own send time. `idx_tx_user_time (user_id, created_at, category, amount_cents)` is a covering index for the totals query, and a test asserts the query plan uses it. `message_id` is UNIQUE, so a replayed gateway event can't log the same entry twice. Use `ON CONFLICT(...) DO NOTHING`, never `INSERT OR IGNORE`, which also hides other constraint failures. The same goes for `&undo`: `processed_undos` (schema v2) records each undo message's ID in the same transaction as the delete, so a replayed `&undo` removes nothing more.
 
 ## Configuration
 
