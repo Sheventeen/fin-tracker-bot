@@ -1,10 +1,9 @@
-*.log
-*.logs
 .env
 build/
 .vscode/
 
 # local database (contains personal financial data)
+data/
 *.db
 *.db-journal
 *.db-wal
